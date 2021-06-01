@@ -15,4 +15,4 @@ sources:
   - axi2mem_tcdm_wr_if.sv
   - axi2mem_trans_unit.sv
   - axi2mem_wr_channel.sv
-  - axi2tcdmx.sv
+  - axi2tcdm.sv
