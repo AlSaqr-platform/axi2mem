@@ -1,17 +1,10 @@
 package:
-  name: axi2mem
+  name: axi2mem_cluster
 
 dependencies:
-  common_cells: { git: "git@github.com:pulp-platform/common_cells.git", version: 1.13.1 }
-
+  axi: { git: "https://github.com/pulp-platform/axi.git", version: "0.29.1" } 
+  common_cells: { git: "https://github.com/pulp-platform/common_cells.git", version: 1.21.0 }
 
 sources:
-  - axi2mem_busy_unit.sv
-  - axi2mem_rd_channel.sv
-  - axi2mem_tcdm_rd_if.sv
-  - axi2mem_tcdm_synch.sv
-  - axi2mem_tcdm_unit.sv
-  - axi2mem_tcdm_wr_if.sv
-  - axi2mem_trans_unit.sv
-  - axi2mem_wr_channel.sv
-  - axi2tcdm.sv
+  - cluster_riscv_defines.sv
+  - axi2mem.sv

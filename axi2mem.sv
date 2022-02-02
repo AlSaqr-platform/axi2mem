@@ -8,549 +8,656 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-// Davide Rossi <davide.rossi@unibo.it>
+// Andreas Kurth <akurth@iis.ee.ethz.ch>
 
-module axi2mem
-#(
-   parameter PER_ADDR_WIDTH = 32,
-   parameter PER_ID_WIDTH   = 5,
-   parameter AXI_ADDR_WIDTH = 32,
-   parameter AXI_DATA_WIDTH = 64,
-   parameter AXI_USER_WIDTH = 6,
-   parameter AXI_ID_WIDTH   = 3,
-   parameter BUFFER_DEPTH   = 2,
-   parameter AXI_STRB_WIDTH = AXI_DATA_WIDTH/8
-)
-(
-   input  logic                      clk_i,
-   input  logic                      rst_ni,
-   input  logic                      test_en_i,
+module axi2mem #(
+  parameter type axi_req_t = logic,     // AXI request type
+  parameter type axi_resp_t = logic,    // AXI response type
+  parameter int unsigned AddrWidth = 0, // address width
+  parameter int unsigned DataWidth = 0, // AXI data width
+  parameter int unsigned IdWidth = 0,   // AXI ID width
+  parameter int unsigned NumBanks = 0,  // number of banks at output
+  parameter int unsigned BufDepth = 1,  // depth of memory response buffer
+  // Dependent parameters, do not override.
+  localparam type addr_t = logic [AddrWidth-1:0],
+  localparam type mem_atop_t = logic [5:0],
+  localparam type mem_data_t = logic [DataWidth/NumBanks-1:0],
+  localparam type mem_strb_t = logic [DataWidth/NumBanks/8-1:0]
+) (
+  input  logic                      clk_i,
+  input  logic                      rst_ni,
 
-   // AXI4 SLAVE
-   //***************************************
-   // WRITE ADDRESS CHANNEL
-   input  logic                      axi_slave_aw_valid_i,
-   input  logic [AXI_ADDR_WIDTH-1:0] axi_slave_aw_addr_i,
-   input  logic [2:0]                axi_slave_aw_prot_i,
-   input  logic [3:0]                axi_slave_aw_region_i,
-   input  logic [7:0]                axi_slave_aw_len_i,
-   input  logic [2:0]                axi_slave_aw_size_i,
-   input  logic [1:0]                axi_slave_aw_burst_i,
-   input  logic                      axi_slave_aw_lock_i,
-   input  logic [3:0]                axi_slave_aw_cache_i,
-   input  logic [3:0]                axi_slave_aw_qos_i,
-   input  logic [AXI_ID_WIDTH-1:0]   axi_slave_aw_id_i,
-   input  logic [AXI_USER_WIDTH-1:0] axi_slave_aw_user_i,
-   output logic                      axi_slave_aw_ready_o,
+  output logic                      busy_o,
 
-   // READ ADDRESS CHANNEL
-   input  logic                      axi_slave_ar_valid_i,
-   input  logic [AXI_ADDR_WIDTH-1:0] axi_slave_ar_addr_i,
-   input  logic [2:0]                axi_slave_ar_prot_i,
-   input  logic [3:0]                axi_slave_ar_region_i,
-   input  logic [7:0]                axi_slave_ar_len_i,
-   input  logic [2:0]                axi_slave_ar_size_i,
-   input  logic [1:0]                axi_slave_ar_burst_i,
-   input  logic                      axi_slave_ar_lock_i,
-   input  logic [3:0]                axi_slave_ar_cache_i,
-   input  logic [3:0]                axi_slave_ar_qos_i,
-   input  logic [AXI_ID_WIDTH-1:0]   axi_slave_ar_id_i,
-   input  logic [AXI_USER_WIDTH-1:0] axi_slave_ar_user_i,
-   output logic                      axi_slave_ar_ready_o,
+  input  axi_req_t                  axi_req_i,
+  output axi_resp_t                 axi_resp_o,
 
-   // WRITE DATA CHANNEL
-   input  logic                      axi_slave_w_valid_i,
-   input  logic [AXI_DATA_WIDTH-1:0] axi_slave_w_data_i,
-   input  logic [AXI_STRB_WIDTH-1:0] axi_slave_w_strb_i,
-   input  logic [AXI_USER_WIDTH-1:0] axi_slave_w_user_i,
-   input  logic                      axi_slave_w_last_i,
-   output logic                      axi_slave_w_ready_o,
-
-   // READ DATA CHANNEL
-   output logic                      axi_slave_r_valid_o,
-   output logic [AXI_DATA_WIDTH-1:0] axi_slave_r_data_o,
-   output logic [1:0]                axi_slave_r_resp_o,
-   output logic                      axi_slave_r_last_o,
-   output logic [AXI_ID_WIDTH-1:0]   axi_slave_r_id_o,
-   output logic [AXI_USER_WIDTH-1:0] axi_slave_r_user_o,
-   input  logic                      axi_slave_r_ready_i,
-
-   // WRITE RESPONSE CHANNEL
-   output logic                      axi_slave_b_valid_o,
-   output logic [1:0]                axi_slave_b_resp_o,
-   output logic [AXI_ID_WIDTH-1:0]   axi_slave_b_id_o,
-   output logic [AXI_USER_WIDTH-1:0] axi_slave_b_user_o,
-   input  logic                      axi_slave_b_ready_i,
-
-   // TCDM MASTER
-   //***************************************
-   // REQUEST CHANNEL
-   output logic [3:0]                tcdm_master_req_o,
-   output logic [3:0][31:0]          tcdm_master_add_o,
-   output logic [3:0]                tcdm_master_type_o,
-   output logic [3:0][3:0]           tcdm_master_be_o,
-   output logic [3:0][31:0]          tcdm_master_data_o,
-   input  logic [3:0]                tcdm_master_gnt_i,
-
-   // RESPONSE CHANNEL
-   input  logic [3:0]                tcdm_master_r_valid_i,
-   input  logic [3:0][31:0]          tcdm_master_r_data_i,
-
-   // BUSY SIGNAL
-   output logic                      busy_o
+  output logic      [NumBanks-1:0]  mem_req_o,
+  input  logic      [NumBanks-1:0]  mem_gnt_i,
+  output addr_t     [NumBanks-1:0]  mem_addr_o,   // byte address
+  output mem_data_t [NumBanks-1:0]  mem_wdata_o,  // write data
+  output mem_strb_t [NumBanks-1:0]  mem_strb_o,   // byte-wise strobe
+  output mem_atop_t [NumBanks-1:0]  mem_atop_o,   // atomic operation
+  output logic      [NumBanks-1:0]  mem_we_o,     // write enable
+  input  logic      [NumBanks-1:0]  mem_rvalid_i, // response valid
+  input  mem_data_t [NumBanks-1:0]  mem_rdata_i   // read data
 );
-   
-   // SIGNAL DECLARATION
-   logic                              s_aw_valid;
-   logic [AXI_ADDR_WIDTH-1:0]         s_aw_addr;
-   logic [2:0]                        s_aw_prot;
-   logic [3:0]                        s_aw_region;
-   logic [7:0]                        s_aw_len;
-   logic [2:0]                        s_aw_size;
-   logic [1:0]                        s_aw_burst;
-   logic                              s_aw_lock;
-   logic [3:0]                        s_aw_cache;
-   logic [3:0]                        s_aw_qos;
-   logic [AXI_ID_WIDTH-1:0]           s_aw_id;
-   logic [AXI_USER_WIDTH-1:0]         s_aw_user;
-   logic                              s_aw_ready;
-   
-   logic                              s_ar_valid;
-   logic [AXI_ADDR_WIDTH-1:0]         s_ar_addr;
-   logic [2:0]                        s_ar_prot;
-   logic [3:0]                        s_ar_region;
-   logic [7:0]                        s_ar_len;
-   logic [2:0]                        s_ar_size;
-   logic [1:0]                        s_ar_burst;
-   logic                              s_ar_lock;
-   logic [3:0]                        s_ar_cache;
-   logic [3:0]                        s_ar_qos;
-   logic [AXI_ID_WIDTH-1:0]           s_ar_id;
-   logic [AXI_USER_WIDTH-1:0]         s_ar_user;
-   logic                              s_ar_ready;
-   
-   logic                              s_w_valid;
-   logic [AXI_DATA_WIDTH-1:0]         s_w_data;
-   logic [AXI_STRB_WIDTH-1:0]         s_w_strb;
-   logic [AXI_USER_WIDTH-1:0]         s_w_user;
-   logic                              s_w_last;
-   logic                              s_w_ready;
-   
-   logic                              s_r_valid;
-   logic [AXI_DATA_WIDTH-1:0]         s_r_data;
-   logic [1:0]                        s_r_resp;
-   logic                              s_r_last;
-   logic [AXI_ID_WIDTH-1:0]           s_r_id;
-   logic [AXI_USER_WIDTH-1:0]         s_r_user;
-   logic                              s_r_ready;
-   
-   logic                              s_b_valid;
-   logic [1:0]                        s_b_resp;
-   logic [AXI_ID_WIDTH-1:0]           s_b_id;
-   logic [AXI_USER_WIDTH-1:0]         s_b_user;
-   logic                              s_b_ready;
-   
-   logic [1:0]                        s_trans_wr_req,s_trans_rd_req;
-   logic [1:0][3:0]                   s_trans_rd_be;
-   logic [1:0][5:0]                   s_trans_wr_id,s_trans_rd_id;
-   logic [1:0][31:0]                  s_trans_wr_add,s_trans_rd_add;
-   logic [1:0]                        s_trans_wr_last,s_trans_rd_last;
-   logic [1:0]                        s_trans_wr_gnt,s_trans_rd_gnt;
-   
-   logic [1:0]                        s_rd_data_push_req, s_rd_data_push_gnt, s_wr_data_pop_req, s_wr_data_pop_gnt;
-   logic [1:0][31:0]                  s_rd_data_push_dat, s_wr_data_pop_dat;
-   logic [1:0][3:0]                   s_rd_data_push_strb, s_wr_data_pop_strb;
-   logic [5:0]                        s_rd_data_push_id,s_rd_data_pop_id;
-   logic                              s_wr_data_push_gnt, s_rd_data_pop_req, s_wr_data_push_req, s_rd_data_pop_gnt, s_rd_data_push_last, s_rd_data_pop_last;
-   logic [63:0]                       s_wr_data_push_dat, s_rd_data_pop_dat;
-   logic [7:0]                        s_wr_data_push_strb, s_rd_data_pop_strb;
-   
-   logic                              s_wr_trans_r_req;
-   logic                              s_wr_trans_r_gnt;
-   logic [5:0]                        s_wr_trans_r_id;
-   
-   // AXI2MEM REQUEST CHANNEL
-   axi2mem_wr_channel
-   #(
-      .AXI_ADDR_WIDTH         ( AXI_ADDR_WIDTH      ),
-      .AXI_DATA_WIDTH         ( AXI_DATA_WIDTH      ),
-      .AXI_USER_WIDTH         ( AXI_USER_WIDTH      ),
-      .AXI_ID_WIDTH           ( AXI_ID_WIDTH        )
-   )
-   wr_channel_i
-   (
-      .clk_i                  ( clk_i               ),
-      .rst_ni                 ( rst_ni              ),
-      .test_en_i              ( test_en_i           ),
 
-      .axi_slave_aw_valid_i   ( s_aw_valid          ),
-      .axi_slave_aw_addr_i    ( s_aw_addr           ),
-      .axi_slave_aw_prot_i    ( s_aw_prot           ),
-      .axi_slave_aw_region_i  ( s_aw_region         ),
-      .axi_slave_aw_len_i     ( s_aw_len            ),
-      .axi_slave_aw_size_i    ( s_aw_size           ),
-      .axi_slave_aw_burst_i   ( s_aw_burst          ),
-      .axi_slave_aw_lock_i    ( s_aw_lock           ),
-      .axi_slave_aw_cache_i   ( s_aw_cache          ),
-      .axi_slave_aw_qos_i     ( s_aw_qos            ),
-      .axi_slave_aw_id_i      ( s_aw_id             ),
-      .axi_slave_aw_user_i    ( s_aw_user           ),
-      .axi_slave_aw_ready_o   ( s_aw_ready          ),
+  typedef logic [DataWidth-1:0]   axi_data_t;
+  typedef logic [DataWidth/8-1:0] axi_strb_t;
+  typedef logic [IdWidth-1:0]     axi_id_t;
 
-      .axi_slave_w_valid_i    ( s_w_valid           ),
-      .axi_slave_w_data_i     ( s_w_data            ),
-      .axi_slave_w_strb_i     ( s_w_strb            ),
-      .axi_slave_w_user_i     ( s_w_user            ),
-      .axi_slave_w_last_i     ( s_w_last            ),
-      .axi_slave_w_ready_o    ( s_w_ready           ),
+  typedef struct packed {
+    addr_t      addr;
+    mem_atop_t  atop;
+    axi_strb_t  strb;
+    axi_data_t  wdata;
+    logic       we;
+  } mem_req_t;
 
-      .axi_slave_b_valid_o    ( s_b_valid           ),
-      .axi_slave_b_resp_o     ( s_b_resp            ),
-      .axi_slave_b_id_o       ( s_b_id              ),
-      .axi_slave_b_user_o     ( s_b_user            ),
-      .axi_slave_b_ready_i    ( s_b_ready           ),
+  typedef struct packed {
+    addr_t          addr;
+    axi_pkg::atop_t atop;
+    axi_id_t        id;
+    logic           last;
+    axi_pkg::qos_t  qos;
+    axi_pkg::size_t size;
+    logic           write;
+  } meta_t;
 
-      .trans_req_o            ( s_trans_wr_req      ),
-      .trans_id_o             ( s_trans_wr_id       ),
-      .trans_add_o            ( s_trans_wr_add      ),
-      .trans_last_o           ( s_trans_wr_last     ),
-      .trans_gnt_i            ( s_trans_wr_gnt      ),
+  axi_data_t      mem_rdata,
+                  m2s_resp;
+  axi_pkg::len_t  r_cnt_d,        r_cnt_q,
+                  w_cnt_d,        w_cnt_q;
+  logic           arb_valid,      arb_ready,
+                  rd_valid,       rd_ready,
+                  wr_valid,       wr_ready,
+                  sel_b,          sel_buf_b,
+                  sel_r,          sel_buf_r,
+                  sel_valid,      sel_ready,
+                  sel_buf_valid,  sel_buf_ready,
+                  sel_lock_d,     sel_lock_q,
+                  meta_valid,     meta_ready,
+                  meta_buf_valid, meta_buf_ready,
+                  meta_sel_d,     meta_sel_q,
+                  m2s_req_valid,  m2s_req_ready,
+                  m2s_resp_valid, m2s_resp_ready,
+                  mem_req_valid,  mem_req_ready,
+                  mem_rvalid;
+  mem_req_t       m2s_req,
+                  mem_req;
+  meta_t          rd_meta,
+                  rd_meta_d,      rd_meta_q,
+                  wr_meta,
+                  wr_meta_d,      wr_meta_q,
+                  meta,           meta_buf;
 
-      .trans_r_id_i           ( s_wr_trans_r_id     ),
-      .trans_r_req_i          ( s_wr_trans_r_req    ),
-      .trans_r_gnt_o          ( s_wr_trans_r_gnt    ),
+  assign busy_o = axi_req_i.aw_valid | axi_req_i.ar_valid | axi_req_i.w_valid |
+                    axi_resp_o.b_valid | axi_resp_o.r_valid |
+                    (r_cnt_q > 0) | (w_cnt_q > 0);
 
-      .data_dat_o             ( s_wr_data_push_dat  ),
-      .data_strb_o            ( s_wr_data_push_strb ),
-      .data_req_o             ( s_wr_data_push_req  ),
-      .data_gnt_i             ( s_wr_data_push_gnt  )
-   );
-   
-   // AXI2MEM READ CHANNEL
-   axi2mem_rd_channel
-   #(
-      .PER_ADDR_WIDTH         ( PER_ADDR_WIDTH      ),
-      .AXI_ADDR_WIDTH         ( AXI_ADDR_WIDTH      ),
-      .AXI_DATA_WIDTH         ( AXI_DATA_WIDTH      ),
-      .AXI_USER_WIDTH         ( AXI_USER_WIDTH      ),
-      .AXI_ID_WIDTH           ( AXI_ID_WIDTH        )
-   )
-   rd_channel_i
-   (
-      .clk_i                  ( clk_i               ),
-      .rst_ni                 ( rst_ni              ),
-      .test_en_i              ( test_en_i           ),
+  // Handle reads.
+  always_comb begin
+    // Default assignments
+    axi_resp_o.ar_ready = 1'b0;
+    rd_meta_d = rd_meta_q;
+    rd_meta = 'x;
+    rd_valid = 1'b0;
+    r_cnt_d = r_cnt_q;
+    // Handle R burst in progress.
+    if (r_cnt_q > '0) begin
+      rd_meta_d.last = (r_cnt_q == 8'd1);
+      rd_meta = rd_meta_d;
+      rd_meta.addr = rd_meta_q.addr + axi_pkg::num_bytes(rd_meta_q.size);
+      rd_valid = 1'b1;
+      if (rd_ready) begin
+        r_cnt_d--;
+        rd_meta_d.addr = rd_meta.addr;
+      end
+    // Handle new AR if there is one.
+    end else if (axi_req_i.ar_valid) begin
+      rd_meta_d = '{
+        addr:   axi_pkg::aligned_addr(axi_req_i.ar.addr, axi_req_i.ar.size),
+        atop:   '0,
+        id:     axi_req_i.ar.id,
+        last:   (axi_req_i.ar.len == '0),
+        qos:    axi_req_i.ar.qos,
+        size:   axi_req_i.ar.size,
+        write:  1'b0
+      };
+      rd_meta = rd_meta_d;
+      rd_meta.addr = axi_req_i.ar.addr;
+      rd_valid = 1'b1;
+      if (rd_ready) begin
+        r_cnt_d = axi_req_i.ar.len;
+        axi_resp_o.ar_ready = 1'b1;
+      end
+    end
+  end
 
-      .axi_slave_ar_valid_i   ( s_ar_valid          ),
-      .axi_slave_ar_addr_i    ( s_ar_addr           ),
-      .axi_slave_ar_prot_i    ( s_ar_prot           ),
-      .axi_slave_ar_region_i  ( s_ar_region         ),
-      .axi_slave_ar_len_i     ( s_ar_len            ),
-      .axi_slave_ar_size_i    ( s_ar_size           ),
-      .axi_slave_ar_burst_i   ( s_ar_burst          ),
-      .axi_slave_ar_lock_i    ( s_ar_lock           ),
-      .axi_slave_ar_cache_i   ( s_ar_cache          ),
-      .axi_slave_ar_qos_i     ( s_ar_qos            ),
-      .axi_slave_ar_id_i      ( s_ar_id             ),
-      .axi_slave_ar_user_i    ( s_ar_user           ),
-      .axi_slave_ar_ready_o   ( s_ar_ready          ),
+  // Handle writes.
+  always_comb begin
+    // Default assignments
+    axi_resp_o.aw_ready = 1'b0;
+    axi_resp_o.w_ready = 1'b0;
+    wr_meta_d = wr_meta_q;
+    wr_meta = 'x;
+    wr_valid = 1'b0;
+    w_cnt_d = w_cnt_q;
+    // Handle W bursts in progress.
+    if (w_cnt_q > '0) begin
+      wr_meta_d.last = (w_cnt_q == 8'd1);
+      wr_meta = wr_meta_d;
+      wr_meta.addr = wr_meta_q.addr + axi_pkg::num_bytes(wr_meta_q.size);
+      if (axi_req_i.w_valid) begin
+        wr_valid = 1'b1;
+        if (wr_ready) begin
+          axi_resp_o.w_ready = 1'b1;
+          w_cnt_d--;
+          wr_meta_d.addr = wr_meta.addr;
+        end
+      end
+    // Handle new AW if there is one.
+    end else if (axi_req_i.aw_valid && axi_req_i.w_valid) begin
+      wr_meta_d = '{
+        addr:   axi_pkg::aligned_addr(axi_req_i.aw.addr, axi_req_i.aw.size),
+        atop:   axi_req_i.aw.atop,
+        id:     axi_req_i.aw.id,
+        last:   (axi_req_i.aw.len == '0),
+        qos:    axi_req_i.aw.qos,
+        size:   axi_req_i.aw.size,
+        write:  1'b1
+      };
+      wr_meta = wr_meta_d;
+      wr_meta.addr = axi_req_i.aw.addr;
+      wr_valid = 1'b1;
+      if (wr_ready) begin
+        w_cnt_d = axi_req_i.aw.len;
+        axi_resp_o.aw_ready = 1'b1;
+        axi_resp_o.w_ready = 1'b1;
+      end
+    end
+  end
 
-      .axi_slave_r_valid_o    ( s_r_valid           ),
-      .axi_slave_r_data_o     ( s_r_data            ),
-      .axi_slave_r_resp_o     ( s_r_resp            ),
-      .axi_slave_r_last_o     ( s_r_last            ),
-      .axi_slave_r_id_o       ( s_r_id              ),
-      .axi_slave_r_user_o     ( s_r_user            ),
-      .axi_slave_r_ready_i    ( s_r_ready           ),
+  // Arbitrate between reads and writes.
+  stream_mux #(
+    .DATA_T (meta_t),
+    .N_INP  (2)
+  ) i_ax_mux (
+    .inp_data_i   ({wr_meta, rd_meta}),
+    .inp_valid_i  ({wr_valid, rd_valid}),
+    .inp_ready_o  ({wr_ready, rd_ready}),
+    .inp_sel_i    (meta_sel_d),
+    .oup_data_o   (meta),
+    .oup_valid_o  (arb_valid),
+    .oup_ready_i  (arb_ready)
+  );
+  always_comb begin
+    meta_sel_d = meta_sel_q;
+    sel_lock_d = sel_lock_q;
+    if (sel_lock_q) begin
+      meta_sel_d = meta_sel_q;
+      if (arb_valid && arb_ready) begin
+        sel_lock_d = 1'b0;
+      end
+    end else begin
+      if (wr_valid ^ rd_valid) begin
+        // If either write or read is valid but not both, select the valid one.
+        meta_sel_d = wr_valid;
+      end else if (wr_valid && rd_valid) begin
+        // If both write and read are valid, decide according to QoS then burst properties.
+        // Priorize higher QoS.
+        if (wr_meta.qos > rd_meta.qos) begin
+          meta_sel_d = 1'b1;
+        end else if (rd_meta.qos > wr_meta.qos) begin
+          meta_sel_d = 1'b0;
+        // Decide requests with identical QoS.
+        end else if (wr_meta.qos == rd_meta.qos) begin
+          // 1. Priorize individual writes over read bursts.
+          // Rationale: Read bursts can be interleaved on AXI but write bursts cannot.
+          if (wr_meta.last && !rd_meta.last) begin
+            meta_sel_d = 1'b1;
+          // 2. Prioritize ongoing burst.
+          // Rationale: Stalled bursts create backpressure or require costly buffers.
+          end else if (w_cnt_q > '0) begin
+            meta_sel_d = 1'b1;
+          end else if (r_cnt_q > '0) begin
+            meta_sel_d = 1'b0;
+          // 3. Otherwise arbitrate round robin to prevent starvation.
+          end else begin
+            meta_sel_d = ~meta_sel_q;
+          end
+        end
+      end
+      // Lock arbitration if valid but not yet ready.
+      if (arb_valid && !arb_ready) begin
+        sel_lock_d = 1'b1;
+      end
+    end
+  end
 
-      .trans_id_o             ( s_trans_rd_id       ),
-      .trans_add_o            ( s_trans_rd_add      ),
-      .trans_be_o             ( s_trans_rd_be       ),
-      .trans_req_o            ( s_trans_rd_req      ),
-      .trans_last_o           ( s_trans_rd_last     ),
-      .trans_gnt_i            ( s_trans_rd_gnt      ),
+  // Fork arbitrated stream to meta data, memory requests, and R/B channel selection.
+  stream_fork #(
+    .N_OUP (3)
+  ) i_fork (
+    .clk_i,
+    .rst_ni,
+    .valid_i  (arb_valid),
+    .ready_o  (arb_ready),
+    .valid_o  ({sel_valid, meta_valid, m2s_req_valid}),
+    .ready_i  ({sel_ready, meta_ready, m2s_req_ready})
+  );
 
-      .data_dat_i             ( s_rd_data_pop_dat   ),
-      .data_id_i              ( s_rd_data_pop_id    ),
-      .data_last_i            ( s_rd_data_pop_last  ),
-      .data_req_o             ( s_rd_data_pop_req   ),
-      .data_gnt_i             ( s_rd_data_pop_gnt   )
-   );
-   
-   //**********************************************************
-   //*************** TRANSACTIONS BUFFER **********************
-   //********************************************************** 
-   axi2mem_trans_unit trans_unit_i
-   (
-      .clk_i               ( clk_i                ),
-      .rst_ni              ( rst_ni               ),
-      .test_en_i           ( test_en_i            ),
+  assign sel_b = meta.write & meta.last;
+  assign sel_r = ~meta.write | meta.atop[5];
 
-      .rd_data_push_dat_i  ( s_rd_data_push_dat   ),
-      .rd_data_push_req_i  ( s_rd_data_push_req   ),
-      .rd_data_push_gnt_o  ( s_rd_data_push_gnt   ),
-      .rd_data_push_id_i   ( s_rd_data_push_id    ),
-      .rd_data_push_last_i ( s_rd_data_push_last  ),
+  stream_fifo #(
+    .FALL_THROUGH (1'b1),
+    .DEPTH        (1 + BufDepth),
+    .T            (logic[1:0])
+  ) i_sel_buf (
+    .clk_i,
+    .rst_ni,
+    .flush_i    (1'b0),
+    .testmode_i (1'b0),
+    .data_i     ({sel_b, sel_r}),
+    .valid_i    (sel_valid),
+    .ready_o    (sel_ready),
+    .data_o     ({sel_buf_b, sel_buf_r}),
+    .valid_o    (sel_buf_valid),
+    .ready_i    (sel_buf_ready),
+    .usage_o    (/* unused */)
+  );
 
-      .rd_data_pop_dat_o   ( s_rd_data_pop_dat    ),
-      .rd_data_pop_req_i   ( s_rd_data_pop_req    ),
-      .rd_data_pop_gnt_o   ( s_rd_data_pop_gnt    ),
-      .rd_data_pop_id_o    ( s_rd_data_pop_id     ),
-      .rd_data_pop_last_o  ( s_rd_data_pop_last   ),
+  stream_fifo #(
+    .FALL_THROUGH (1'b1),
+    .DEPTH        (1 + BufDepth),
+    .T            (meta_t)
+  ) i_meta_buf (
+    .clk_i,
+    .rst_ni,
+    .flush_i    (1'b0),
+    .testmode_i (1'b0),
+    .data_i     (meta),
+    .valid_i    (meta_valid),
+    .ready_o    (meta_ready),
+    .data_o     (meta_buf),
+    .valid_o    (meta_buf_valid),
+    .ready_i    (meta_buf_ready),
+    .usage_o    (/* unused */)
+  );
 
-      .wr_data_push_dat_i  ( s_wr_data_push_dat   ),
-      .wr_data_push_strb_i ( s_wr_data_push_strb  ),
-      .wr_data_push_req_i  ( s_wr_data_push_req   ),
-      .wr_data_push_gnt_o  ( s_wr_data_push_gnt   ),
+  // Map AXI ATOPs to RI5CY AMOs.
+  always_comb begin
+    m2s_req.atop = '0;
+    m2s_req.wdata = axi_req_i.w.data;
+    if (meta_valid && meta.atop[5:4] != axi_pkg::ATOP_NONE) begin
+      m2s_req.atop[5] = 1'b1;
+      if (meta.atop == axi_pkg::ATOP_ATOMICSWAP) begin
+        m2s_req.atop[4:0] = cluster_riscv_defines::AMO_SWAP;
+      end else begin
+        case (meta.atop[2:0])
+          axi_pkg::ATOP_ADD:  m2s_req.atop[4:0] = cluster_riscv_defines::AMO_ADD;
+          axi_pkg::ATOP_CLR: begin
+            m2s_req.atop[4:0] = cluster_riscv_defines::AMO_AND;
+            m2s_req.wdata = ~axi_req_i.w.data;
+          end
+          axi_pkg::ATOP_EOR:  m2s_req.atop[4:0] = cluster_riscv_defines::AMO_XOR;
+          axi_pkg::ATOP_SET:  m2s_req.atop[4:0] = cluster_riscv_defines::AMO_OR;
+          axi_pkg::ATOP_SMAX: m2s_req.atop[4:0] = cluster_riscv_defines::AMO_MAX;
+          axi_pkg::ATOP_SMIN: m2s_req.atop[4:0] = cluster_riscv_defines::AMO_MIN;
+          axi_pkg::ATOP_UMAX: m2s_req.atop[4:0] = cluster_riscv_defines::AMO_MAXU;
+          axi_pkg::ATOP_UMIN: m2s_req.atop[4:0] = cluster_riscv_defines::AMO_MINU;
+        endcase
+      end
+    end
+  end
+  assign m2s_req.addr = meta.addr;
+  assign m2s_req.strb = axi_req_i.w.strb;
+  assign m2s_req.we = meta.write;
 
-      .wr_data_pop_dat_o   ( s_wr_data_pop_dat    ),
-      .wr_data_pop_strb_o  ( s_wr_data_pop_strb   ),
-      .wr_data_pop_req_i   ( s_wr_data_pop_req    ),
-      .wr_data_pop_gnt_o   ( s_wr_data_pop_gnt    )
-   );
-   
-   //**********************************************************
-   //*************** TCDM UNIT ********************************
-   //**********************************************************
-   axi2mem_tcdm_unit tcdm_unit_i
-   (
-      .clk_i            ( clk_i                  ),
-      .rst_ni           ( rst_ni                 ),
-      .test_en_i        ( test_en_i              ),
+  // Interface memory as stream.
+  stream_to_mem #(
+    .mem_req_t  (mem_req_t),
+    .mem_resp_t (axi_data_t),
+    .BufDepth   (BufDepth)
+  ) i_mem2stream (
+    .clk_i,
+    .rst_ni,
+    .req_i            (m2s_req),
+    .req_valid_i      (m2s_req_valid),
+    .req_ready_o      (m2s_req_ready),
+    .resp_o           (m2s_resp),
+    .resp_valid_o     (m2s_resp_valid),
+    .resp_ready_i     (m2s_resp_ready),
+    .mem_req_o        (mem_req),
+    .mem_req_valid_o  (mem_req_valid),
+    .mem_req_ready_i  (mem_req_ready),
+    .mem_resp_i       (mem_rdata),
+    .mem_resp_valid_i (mem_rvalid)
+  );
 
-      .tcdm_req_o       ( tcdm_master_req_o      ),
-      .tcdm_add_o       ( tcdm_master_add_o      ),
-      .tcdm_we_o        ( tcdm_master_type_o     ),
-      .tcdm_be_o        ( tcdm_master_be_o       ),
-      .tcdm_wdata_o     ( tcdm_master_data_o     ),
-      .tcdm_gnt_i       ( tcdm_master_gnt_i      ),
-      .tcdm_r_valid_i   ( tcdm_master_r_valid_i  ),
-      .tcdm_r_rdata_i   ( tcdm_master_r_data_i   ),
+  // Split single memory request to desired number of banks.
+  mem2banks #(
+    .AddrWidth  (AddrWidth),
+    .DataWidth  (DataWidth),
+    .NumBanks   (NumBanks)
+  ) i_mem2banks (
+    .clk_i,
+    .rst_ni,
+    .req_i          (mem_req_valid),
+    .gnt_o          (mem_req_ready),
+    .addr_i         (mem_req.addr),
+    .wdata_i        (mem_req.wdata),
+    .strb_i         (mem_req.strb),
+    .atop_i         (mem_req.atop),
+    .we_i           (mem_req.we),
+    .rvalid_o       (mem_rvalid),
+    .rdata_o        (mem_rdata),
+    .bank_req_o     (mem_req_o),
+    .bank_gnt_i     (mem_gnt_i),
+    .bank_addr_o    (mem_addr_o),
+    .bank_wdata_o   (mem_wdata_o),
+    .bank_strb_o    (mem_strb_o),
+    .bank_atop_o    (mem_atop_o),
+    .bank_we_o      (mem_we_o),
+    .bank_rvalid_i  (mem_rvalid_i),
+    .bank_rdata_i   (mem_rdata_i)
+  );
 
-      // WR CHANNEL
-      .trans_wr_id_i    ( s_trans_wr_id          ),
-      .trans_wr_add_i   ( s_trans_wr_add         ),
-      .trans_wr_req_i   ( s_trans_wr_req         ),
-      .trans_wr_last_i  ( s_trans_wr_last        ),
-      .trans_wr_gnt_o   ( s_trans_wr_gnt         ),
+  // Join memory read data and meta data stream.
+  logic mem_join_valid, mem_join_ready;
+  stream_join #(
+    .N_INP (2)
+  ) i_join (
+    .inp_valid_i  ({m2s_resp_valid, meta_buf_valid}),
+    .inp_ready_o  ({m2s_resp_ready, meta_buf_ready}),
+    .oup_valid_o  (mem_join_valid),
+    .oup_ready_i  (mem_join_ready)
+  );
 
-      .data_wr_dat_i    ( s_wr_data_pop_dat      ),
-      .data_wr_strb_i   ( s_wr_data_pop_strb     ),
-      .data_wr_req_o    ( s_wr_data_pop_req      ),
-      .data_wr_gnt_i    ( s_wr_data_pop_gnt      ),
+  // Dynamically fork the joined stream to B and R channels.
+  stream_fork_dynamic #(
+    .N_OUP  (2)
+  ) i_fork_dynamic (
+    .clk_i,
+    .rst_ni,
+    .valid_i      (mem_join_valid),
+    .ready_o      (mem_join_ready),
+    .sel_i        ({sel_buf_b, sel_buf_r}),
+    .sel_valid_i  (sel_buf_valid),
+    .sel_ready_o  (sel_buf_ready),
+    .valid_o      ({axi_resp_o.b_valid, axi_resp_o.r_valid}),
+    .ready_i      ({axi_req_i.b_ready, axi_req_i.r_ready})
+  );
 
-      .synch_wr_gnt_i   ( s_wr_trans_r_gnt       ),
-      .synch_wr_req_o   ( s_wr_trans_r_req       ),
-      .synch_wr_id_o    ( s_wr_trans_r_id        ),
+  // Compose B responses.
+  assign axi_resp_o.b = '{
+    id: meta_buf.id,
+    resp: axi_pkg::RESP_OKAY,
+    user: '0
+  };
 
-      // RD CHANNEL
-      .trans_rd_id_i    ( s_trans_rd_id          ),
-      .trans_rd_add_i   ( s_trans_rd_add         ),
-      .trans_rd_last_i  ( s_trans_rd_last        ),
-      .trans_rd_req_i   ( s_trans_rd_req         ),
-      .trans_rd_be_i    ( s_trans_rd_be          ),
-      .trans_rd_gnt_o   ( s_trans_rd_gnt         ),
+  // Compose R responses.
+  assign axi_resp_o.r = '{
+    data: m2s_resp,
+    id: meta_buf.id,
+    last: meta_buf.last,
+    resp: axi_pkg::RESP_OKAY,
+    user: '0
+  };
 
-      .data_rd_dat_o    ( s_rd_data_push_dat     ),
-      .data_rd_last_o   ( s_rd_data_push_last    ),
-      .data_rd_id_o     ( s_rd_data_push_id      ),
-      .data_rd_req_o    ( s_rd_data_push_req     ),
-      .data_rd_gnt_i    ( s_rd_data_push_gnt     )
-   );
-   
-   //**********************************************************
-   //*************** BUSY UNIT ********************************
-   //**********************************************************
-   axi2mem_busy_unit busy_unit_i
-   (
-      .clk_i       ( clk_i                             ),
-      .rst_ni      ( rst_ni                            ),
+  // Registers
+  always_ff @(posedge clk_i, negedge rst_ni) begin
+    if (!rst_ni) begin
+      meta_sel_q  <= 1'b0;
+      sel_lock_q  <= 1'b0;
+      rd_meta_q   <= '{default: '0};
+      wr_meta_q   <= '{default: '0};
+      r_cnt_q     <= '0;
+      w_cnt_q     <= '0;
+    end else begin
+      meta_sel_q  <= meta_sel_d;
+      sel_lock_q  <= sel_lock_d;
+      rd_meta_q   <= rd_meta_d;
+      wr_meta_q   <= wr_meta_d;
+      r_cnt_q     <= r_cnt_d;
+      w_cnt_q     <= w_cnt_d;
+    end
+  end
 
-      // WRITE INTERFACE
-      .aw_sync_i   ( s_aw_valid & s_aw_ready           ),
-      .b_sync_i    ( s_b_valid & s_b_ready             ),
+  // Assertions
+  `ifndef VERILATOR
+  `ifndef TARGET_SYNTHESIS
+    default disable iff (!rst_ni);
+    assume property (@(posedge clk_i)
+        axi_req_i.ar_valid && !axi_resp_o.ar_ready |=> $stable(axi_req_i.ar))
+      else $error("AR must remain stable until handshake has happened!");
+    assert property (@(posedge clk_i)
+        axi_resp_o.r_valid && !axi_req_i.r_ready |=> $stable(axi_resp_o.r))
+      else $error("R must remain stable until handshake has happened!");
+    assume property (@(posedge clk_i)
+        axi_req_i.aw_valid && !axi_resp_o.aw_ready |=> $stable(axi_req_i.aw))
+      else $error("AW must remain stable until handshake has happened!");
+    assume property (@(posedge clk_i)
+        axi_req_i.w_valid && !axi_resp_o.w_ready |=> $stable(axi_req_i.w))
+      else $error("W must remain stable until handshake has happened!");
+    assert property (@(posedge clk_i)
+        axi_resp_o.b_valid && !axi_req_i.b_ready |=> $stable(axi_resp_o.b))
+      else $error("B must remain stable until handshake has happened!");
+    assert property (@(posedge clk_i) axi_req_i.ar_valid && axi_req_i.ar.len > 0 |->
+        axi_req_i.ar.burst == axi_pkg::BURST_INCR)
+      else $error("Non-incrementing bursts are not supported!");
+    assert property (@(posedge clk_i) axi_req_i.aw_valid && axi_req_i.aw.len > 0 |->
+        axi_req_i.aw.burst == axi_pkg::BURST_INCR)
+      else $error("Non-incrementing bursts are not supported!");
+    assert property (@(posedge clk_i) meta_valid && meta.atop != '0 |-> meta.write)
+      else $warning("Unexpected atomic operation on read.");
+  `endif
+  `endif
 
-      // READ INTERFACE
-      .ar_sync_i   ( s_ar_valid & s_ar_ready           ),
-      .r_sync_i    ( s_r_valid & s_r_ready & s_r_last  ),
+endmodule
 
-      // BUSY SIGNAL
-      .busy_o      ( busy_o                            )
-   );
-      
-   //**********************************************************
-   //*************** AXI BUFFERS ******************************
-   //**********************************************************
-   
-   // AXI WRITE ADDRESS CHANNEL BUFFER
-   axi_aw_buffer
-   #(
-      .ID_WIDTH       ( AXI_ID_WIDTH            ),
-      .ADDR_WIDTH     ( AXI_ADDR_WIDTH          ),
-      .USER_WIDTH     ( AXI_USER_WIDTH          ),
-      .BUFFER_DEPTH   ( BUFFER_DEPTH            )
-   )
-   aw_buffer_i
-   (
-      .clk_i           ( clk_i                  ),
-      .rst_ni          ( rst_ni                 ),
-      .test_en_i       ( test_en_i              ),
 
-      .slave_valid_i   ( axi_slave_aw_valid_i   ),
-      .slave_addr_i    ( axi_slave_aw_addr_i    ),
-      .slave_prot_i    ( axi_slave_aw_prot_i    ),
-      .slave_region_i  ( axi_slave_aw_region_i  ),
-      .slave_len_i     ( axi_slave_aw_len_i     ),
-      .slave_size_i    ( axi_slave_aw_size_i    ),
-      .slave_burst_i   ( axi_slave_aw_burst_i   ),
-      .slave_lock_i    ( axi_slave_aw_lock_i    ),
-      .slave_cache_i   ( axi_slave_aw_cache_i   ),
-      .slave_qos_i     ( axi_slave_aw_qos_i     ),
-      .slave_id_i      ( axi_slave_aw_id_i      ),
-      .slave_user_i    ( axi_slave_aw_user_i    ),
-      .slave_ready_o   ( axi_slave_aw_ready_o   ),
+`include "axi/assign.svh"
+`include "axi/typedef.svh"
+// Interface wrapper for axi2mem
+module axi2mem_wrap #(
+  parameter int unsigned AddrWidth = 0,
+  parameter int unsigned DataWidth = 0,
+  parameter int unsigned IdWidth = 0,
+  parameter int unsigned UserWidth = 0,
+  parameter int unsigned NumBanks = 0,
+  parameter int unsigned BufDepth = 1,  // depth of memory response buffer
+  // Dependent parameters, do not override.
+  localparam type addr_t = logic [AddrWidth-1:0],
+  localparam type mem_atop_t = logic [5:0],
+  localparam type mem_data_t = logic [DataWidth/NumBanks-1:0],
+  localparam type mem_strb_t = logic [DataWidth/NumBanks/8-1:0]
+) (
+  input  logic                      clk_i,
+  input  logic                      rst_ni,
 
-      .master_valid_o  ( s_aw_valid             ),
-      .master_addr_o   ( s_aw_addr              ),
-      .master_prot_o   ( s_aw_prot              ),
-      .master_region_o ( s_aw_region            ),
-      .master_len_o    ( s_aw_len               ),
-      .master_size_o   ( s_aw_size              ),
-      .master_burst_o  ( s_aw_burst             ),
-      .master_lock_o   ( s_aw_lock              ),
-      .master_cache_o  ( s_aw_cache             ),
-      .master_qos_o    ( s_aw_qos               ),
-      .master_id_o     ( s_aw_id                ),
-      .master_user_o   ( s_aw_user              ),
-      .master_ready_i  ( s_aw_ready             )
-   );
-   
-   // AXI READ ADDRESS CHANNEL BUFFER
-   axi_ar_buffer
-   #(
-      .ID_WIDTH        ( AXI_ID_WIDTH           ),
-      .ADDR_WIDTH      ( AXI_ADDR_WIDTH         ),
-      .USER_WIDTH      ( AXI_USER_WIDTH         ),
-      .BUFFER_DEPTH    ( BUFFER_DEPTH           )
-   )
-   ar_buffer_i
-   (
-      .clk_i           ( clk_i                  ),
-      .rst_ni          ( rst_ni                 ),
-      .test_en_i       ( test_en_i              ),
+  output logic                      busy_o,
 
-      .slave_valid_i   ( axi_slave_ar_valid_i   ),
-      .slave_addr_i    ( axi_slave_ar_addr_i    ),
-      .slave_prot_i    ( axi_slave_ar_prot_i    ),
-      .slave_region_i  ( axi_slave_ar_region_i  ),
-      .slave_len_i     ( axi_slave_ar_len_i     ),
-      .slave_size_i    ( axi_slave_ar_size_i    ),
-      .slave_burst_i   ( axi_slave_ar_burst_i   ),
-      .slave_lock_i    ( axi_slave_ar_lock_i    ),
-      .slave_cache_i   ( axi_slave_ar_cache_i   ),
-      .slave_qos_i     ( axi_slave_ar_qos_i     ),
-      .slave_id_i      ( axi_slave_ar_id_i      ),
-      .slave_user_i    ( axi_slave_ar_user_i    ),
-      .slave_ready_o   ( axi_slave_ar_ready_o   ),
+  AXI_BUS.Slave                     slv,
 
-      .master_valid_o  ( s_ar_valid             ),
-      .master_addr_o   ( s_ar_addr              ),
-      .master_prot_o   ( s_ar_prot              ),
-      .master_region_o ( s_ar_region            ),
-      .master_len_o    ( s_ar_len               ),
-      .master_size_o   ( s_ar_size              ),
-      .master_burst_o  ( s_ar_burst             ),
-      .master_lock_o   ( s_ar_lock              ),
-      .master_cache_o  ( s_ar_cache             ),
-      .master_qos_o    ( s_ar_qos               ),
-      .master_id_o     ( s_ar_id                ),
-      .master_user_o   ( s_ar_user              ),
-      .master_ready_i  ( s_ar_ready             )
-   );
-   
-   // AXI WRITE DATA CHANNEL BUFFER
-   axi_w_buffer
-   #(
-      .DATA_WIDTH      ( AXI_DATA_WIDTH        ),
-      .USER_WIDTH      ( AXI_USER_WIDTH        ),
-      .BUFFER_DEPTH    ( BUFFER_DEPTH          )
-   )
-   w_buffer_i
-   (
-      .clk_i           ( clk_i                 ),
-      .rst_ni          ( rst_ni                ),
-      .test_en_i       ( test_en_i             ),
+  output logic      [NumBanks-1:0]  mem_req_o,
+  input  logic      [NumBanks-1:0]  mem_gnt_i,
+  output addr_t     [NumBanks-1:0]  mem_addr_o,   // byte address
+  output mem_data_t [NumBanks-1:0]  mem_wdata_o,  // write data
+  output mem_strb_t [NumBanks-1:0]  mem_strb_o,   // byte-wise strobe
+  output mem_atop_t [NumBanks-1:0]  mem_atop_o,   // atomic operation
+  output logic      [NumBanks-1:0]  mem_we_o,     // write enable
+  input  logic      [NumBanks-1:0]  mem_rvalid_i, // response valid
+  input  mem_data_t [NumBanks-1:0]  mem_rdata_i   // read data
+);
+  typedef logic [IdWidth-1:0]     id_t;
+  typedef logic [DataWidth-1:0]   data_t;
+  typedef logic [DataWidth/8-1:0] strb_t;
+  typedef logic [UserWidth-1:0]   user_t;
+  `AXI_TYPEDEF_AW_CHAN_T ( aw_chan_t, addr_t, id_t,         user_t);
+  `AXI_TYPEDEF_W_CHAN_T  (  w_chan_t, data_t,       strb_t, user_t);
+  `AXI_TYPEDEF_B_CHAN_T  (  b_chan_t,         id_t,         user_t);
+  `AXI_TYPEDEF_AR_CHAN_T ( ar_chan_t, addr_t, id_t,         user_t);
+  `AXI_TYPEDEF_R_CHAN_T  (  r_chan_t, data_t, id_t,         user_t);
+  `AXI_TYPEDEF_REQ_T     (     req_t, aw_chan_t, w_chan_t, ar_chan_t);
+  `AXI_TYPEDEF_RESP_T    (    resp_t,  b_chan_t, r_chan_t);
+  req_t   req;
+  resp_t  resp;
+  `AXI_ASSIGN_TO_REQ    (req, slv);
+  `AXI_ASSIGN_FROM_RESP (slv, resp);
+  axi2mem_cluster #(
+    .axi_req_t  (req_t),
+    .axi_resp_t (resp_t),
+    .AddrWidth  (AddrWidth),
+    .DataWidth  (DataWidth),
+    .IdWidth    (IdWidth),
+    .NumBanks   (NumBanks),
+    .BufDepth   (BufDepth)
+  ) i_axi2mem (
+    .clk_i,
+    .rst_ni,
+    .busy_o,
+    .axi_req_i  (req),
+    .axi_resp_o (resp),
+    .mem_req_o,
+    .mem_gnt_i,
+    .mem_addr_o,
+    .mem_wdata_o,
+    .mem_strb_o,
+    .mem_atop_o,
+    .mem_we_o,
+    .mem_rvalid_i,
+    .mem_rdata_i
+  );
+endmodule
 
-      .slave_valid_i   ( axi_slave_w_valid_i   ),
-      .slave_data_i    ( axi_slave_w_data_i    ),
-      .slave_strb_i    ( axi_slave_w_strb_i    ),
-      .slave_user_i    ( axi_slave_w_user_i    ),
-      .slave_last_i    ( axi_slave_w_last_i    ),
-      .slave_ready_o   ( axi_slave_w_ready_o   ),
 
-      .master_valid_o  ( s_w_valid             ),
-      .master_data_o   ( s_w_data              ),
-      .master_strb_o   ( s_w_strb              ),
-      .master_user_o   ( s_w_user              ),
-      .master_last_o   ( s_w_last              ),
-      .master_ready_i  ( s_w_ready             )
-   );
-   
-   // AXI READ DATA CHANNEL BUFFER
-   axi_r_buffer
-   #(
-      .ID_WIDTH        ( AXI_ID_WIDTH         ),
-      .DATA_WIDTH      ( AXI_DATA_WIDTH       ),
-      .USER_WIDTH      ( AXI_USER_WIDTH       ),
-      .BUFFER_DEPTH    ( BUFFER_DEPTH         )
-   )
-   r_buffer_i
-   (
-      .clk_i           ( clk_i                ),
-      .rst_ni          ( rst_ni               ),
-      .test_en_i       ( test_en_i            ),
+// Split memory access over multiple parallel banks, where each bank has its own req/gnt request and
+// valid response direction.
+module mem2banks #(
+  parameter int unsigned AddrWidth = 0, // input address width
+  parameter int unsigned DataWidth = 0, // input data width, must be a power of two
+  parameter int unsigned NumBanks = 0,  // number of banks at output, must evenly divide the data
+                                        // width
+  // Dependent parameters, do not override.
+  localparam type addr_t = logic [AddrWidth-1:0],
+  localparam type atop_t = logic [5:0],
+  localparam type inp_data_t = logic [DataWidth-1:0],
+  localparam type inp_strb_t = logic [DataWidth/8-1:0],
+  localparam type oup_data_t = logic [DataWidth/NumBanks-1:0],
+  localparam type oup_strb_t = logic [DataWidth/NumBanks/8-1:0]
+) (
+  input  logic                      clk_i,
+  input  logic                      rst_ni,
 
-      .slave_valid_i   ( s_r_valid            ),
-      .slave_data_i    ( s_r_data             ),
-      .slave_resp_i    ( s_r_resp             ),
-      .slave_user_i    ( s_r_user             ),
-      .slave_id_i      ( s_r_id               ),
-      .slave_last_i    ( s_r_last             ),
-      .slave_ready_o   ( s_r_ready            ),
+  input  logic                      req_i,
+  output logic                      gnt_o,
+  input  addr_t                     addr_i,
+  input  inp_data_t                 wdata_i,
+  input  inp_strb_t                 strb_i,
+  input  atop_t                     atop_i,
+  input  logic                      we_i,
+  output logic                      rvalid_o,
+  output inp_data_t                 rdata_o,
 
-      .master_valid_o  ( axi_slave_r_valid_o  ),
-      .master_data_o   ( axi_slave_r_data_o   ),
-      .master_resp_o   ( axi_slave_r_resp_o   ),
-      .master_user_o   ( axi_slave_r_user_o   ),
-      .master_id_o     ( axi_slave_r_id_o     ),
-      .master_last_o   ( axi_slave_r_last_o   ),
-      .master_ready_i  ( axi_slave_r_ready_i  )
-   );
-   
-   // AXI WRITE RESPONSE CHANNEL BUFFER
-   axi_b_buffer
-   #(
-      .ID_WIDTH        ( AXI_ID_WIDTH         ),
-      .USER_WIDTH      ( AXI_USER_WIDTH       ),
-      .BUFFER_DEPTH    ( BUFFER_DEPTH         )
-   )
-   b_buffer_i
-   (
-      .clk_i           ( clk_i                ),
-      .rst_ni          ( rst_ni               ),
-      .test_en_i       ( test_en_i            ),
+  output logic      [NumBanks-1:0]  bank_req_o,
+  input  logic      [NumBanks-1:0]  bank_gnt_i,
+  output addr_t     [NumBanks-1:0]  bank_addr_o,
+  output oup_data_t [NumBanks-1:0]  bank_wdata_o,
+  output oup_strb_t [NumBanks-1:0]  bank_strb_o,
+  output atop_t     [NumBanks-1:0]  bank_atop_o,
+  output logic      [NumBanks-1:0]  bank_we_o,
+  input  logic      [NumBanks-1:0]  bank_rvalid_i,
+  input  oup_data_t [NumBanks-1:0]  bank_rdata_i
+);
 
-      .slave_valid_i   ( s_b_valid            ),
-      .slave_resp_i    ( s_b_resp             ),
-      .slave_id_i      ( s_b_id               ),
-      .slave_user_i    ( s_b_user             ),
-      .slave_ready_o   ( s_b_ready            ),
+  localparam DataBytes = $bits(inp_strb_t);
+  localparam BitsPerBank  = $bits(oup_data_t);
+  localparam BytesPerBank = $bits(oup_strb_t);
 
-      .master_valid_o  ( axi_slave_b_valid_o  ),
-      .master_resp_o   ( axi_slave_b_resp_o   ),
-      .master_id_o     ( axi_slave_b_id_o     ),
-      .master_user_o   ( axi_slave_b_user_o   ),
-      .master_ready_i  ( axi_slave_b_ready_i  )
-   );
-   
+  typedef struct packed {
+    addr_t      addr;
+    oup_data_t  wdata;
+    oup_strb_t  strb;
+    atop_t      atop;
+    logic       we;
+  } req_t;
+
+  logic                 req_valid;
+  logic [NumBanks-1:0]              req_ready,
+                        resp_valid, resp_ready;
+  req_t [NumBanks-1:0]  bank_req,
+                        bank_oup;
+
+  function automatic addr_t align_addr(input addr_t addr);
+    return (addr >> $clog2(DataBytes)) << $clog2(DataBytes);
+  endfunction
+
+  // Handle requests.
+  assign req_valid = req_i & gnt_o;
+  for (genvar i = 0; i < NumBanks; i++) begin : gen_reqs
+    assign bank_req[i].addr   = align_addr(addr_i) + i * BytesPerBank;
+    assign bank_req[i].wdata  = wdata_i[i*BitsPerBank+:BitsPerBank];
+    assign bank_req[i].strb   = strb_i[i*BytesPerBank+:BytesPerBank];
+    assign bank_req[i].atop   = atop_i;
+    assign bank_req[i].we     = we_i;
+    fall_through_register #(
+      .T  (req_t)
+    ) i_ft_reg (
+      .clk_i,
+      .rst_ni,
+      .clr_i      (1'b0),
+      .testmode_i (1'b0),
+      .valid_i    (req_valid),
+      .ready_o    (req_ready[i]),
+      .data_i     (bank_req[i]),
+      .valid_o    (bank_req_o[i]),
+      .ready_i    (bank_gnt_i[i]),
+      .data_o     (bank_oup[i])
+    );
+    assign bank_addr_o[i]   = bank_oup[i].addr;
+    assign bank_wdata_o[i]  = bank_oup[i].wdata;
+    assign bank_strb_o[i]   = bank_oup[i].strb;
+    assign bank_atop_o[i]   = bank_oup[i].atop;
+    assign bank_we_o[i]     = bank_oup[i].we;
+  end
+
+  // Grant output if all our requests have been granted.
+  assign gnt_o = (&req_ready) & (&resp_ready);
+
+  // Handle responses.
+  for (genvar i = 0; i < NumBanks; i++) begin : gen_resp_regs
+    fall_through_register #(
+      .T  (oup_data_t)
+    ) i_ft_reg (
+      .clk_i,
+      .rst_ni,
+      .clr_i      (1'b0),
+      .testmode_i (1'b0),
+      .valid_i    (bank_rvalid_i[i]),
+      .ready_o    (resp_ready[i]),
+      .data_i     (bank_rdata_i[i]),
+      .data_o     (rdata_o[i*BitsPerBank+:BitsPerBank]),
+      .ready_i    (rvalid_o),
+      .valid_o    (resp_valid[i])
+    );
+  end
+  assign rvalid_o = &resp_valid;
+
+  // Assertions
+  `ifndef VERILATOR
+  `ifndef TARGET_SYNTHESIS
+    initial begin
+      assume (DataWidth != 0 && (DataWidth & (DataWidth - 1)) == 0)
+        else $fatal(1, "Data width must be a power of two!");
+      assume (DataWidth % NumBanks == 0)
+        else $fatal(1, "Data width must be evenly divisible over banks!");
+      assume ((DataWidth / NumBanks) % 8 == 0)
+        else $fatal(1, "Data width of each bank must be divisible into 8-bit bytes!");
+    end
+  `endif
+  `endif
+
 endmodule
