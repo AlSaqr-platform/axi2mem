@@ -1,4 +1,4 @@
-axi2mem:
+axi_to_mem:
   files: [
-    axi2mem.sv,
+    axi_to_mem.sv,
   ]
