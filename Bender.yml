@@ -3,6 +3,9 @@ package:
 
 dependencies:
   common_cells: { git: "git@github.com:pulp-platform/common_cells.git", version: 1.13.1 }
+  tech_cells_generic: { git: "https://github.com/pulp-platform/tech_cells_generic.git", version: 0.2.7 }
+  axi_slice: { git: "https://github.com/pulp-platform/axi_slice.git", version: 1.1.4 } # deprecated, replaced by axi_cut (in axi repo)
+  axi: { git: "git@github.com:AlSaqr-platform/axi.git" , rev: "752a761a47f0bc3cbaa7cfa0d1b54518d864dce1" }
 
 
 sources:
@@ -15,3 +18,5 @@ sources:
   - axi2mem_trans_unit.sv
   - axi2mem_wr_channel.sv
   - axi2tcdm.sv
+  - dut_if.sv
+  - tb_axi2tcdm.sv
